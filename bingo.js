@@ -1,0 +1,88 @@
+import {BINGO_KEY, newState, newBoard, boardKey, progress, validateBingo, shuffledLabels} from './bingo-model.js?v=36';
+const $ = id => document.getElementById(id);
+let state = newState(), editing = false, dismissed = false, saveFailed = false, pendingAction;
+try { const saved = localStorage.getItem(BINGO_KEY); if (saved) state = validateBingo(JSON.parse(saved)); }
+catch { saveFailed = true; }
+function board() { const key = boardKey(state.size, state.mode); return state.boards[key] ||= newBoard(state.size, state.mode); }
+function save() {
+  try { localStorage.setItem(BINGO_KEY, JSON.stringify(state)); saveFailed = false; }
+  catch { saveFailed = true; }
+  $('bingoSave').textContent = saveFailed ? '저장하지 못했어요 · 이 화면을 닫기 전에 확인해주세요.' : '';
+  $('bingoSave').hidden = !saveFailed;
+}
+function paintCell(cell, index, stats, animate = false) {
+  const checked = board().checked[index];
+  cell.classList.toggle('is-checked', checked); cell.classList.toggle('is-line', stats.winning.has(index));
+  cell.classList.toggle('just-checked', animate && checked);
+  if (!editing) { cell.setAttribute('aria-pressed', String(checked)); cell.setAttribute('aria-label', `${index + 1}번 칸 ${board().labels[index]}`); }
+}
+function update(animateIndex = -1) {
+  const stats = progress(board(), state.size);
+  [...$('bingoGrid').children].forEach((cell, i) => paintCell(cell, i, stats, i === animateIndex));
+  $('bingoLines').textContent = stats.lines;
+  $('bingoCount').textContent = `${stats.count} / ${state.size * state.size}`;
+  $('bingoRemaining').textContent = `${state.size * state.size - stats.count}칸 남았어요`;
+  $('bingoClearBadge').hidden = !stats.clear;
+  const wasHidden = $('bingoMission').hidden;
+  $('bingoMission').hidden = !stats.clear || dismissed || editing;
+  if (wasHidden && !$('bingoMission').hidden) {
+    $('bingoMission').classList.remove('bingo-reveal'); void $('bingoMission').offsetWidth; $('bingoMission').classList.add('bingo-reveal');
+    $('bingoContinue').focus();
+  }
+}
+function render() {
+  if (state.size === 10) state.mode = 'number';
+  $('bingoModePicker').hidden = state.size === 10;
+  const current = board();
+  document.querySelectorAll('[data-bingo-size]').forEach(el => el.setAttribute('aria-pressed', String(Number(el.dataset.bingoSize) === state.size)));
+  document.querySelectorAll('[data-bingo-mode]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.bingoMode === state.mode)));
+  $('bingoTitle').textContent = state.size === 10 ? '100 빙고' : `${state.size} × ${state.size} 빙고`;
+  $('bingoSubtitle').textContent = `${state.mode === 'alphabet' ? 'ALPHABET' : 'NUMBER'} BINGO`;
+  $('bingoHint').hidden = !editing;
+  $('bingoHint').textContent = editing ? '칸의 글자를 수정하세요 · 최대 12자 · 빈칸은 이전 값으로 복원돼요' : '';
+  $('bingoEdit').textContent = editing ? '✓ 수정 완료' : '✎ 글자 수정';
+  $('bingoEdit').setAttribute('aria-pressed', String(editing));
+  const grid = $('bingoGrid'); grid.replaceChildren(); grid.style.setProperty('--bingo-size', state.size); grid.classList.toggle('hundred', state.size === 10); grid.classList.toggle('editing', editing);
+  current.labels.forEach((label, index) => {
+    const cell = document.createElement(editing ? 'div' : 'button'); cell.className = 'bingo-cell';
+    if (editing) {
+      const input = document.createElement('input'); input.type = 'text'; input.value = label; input.maxLength = 12; input.setAttribute('aria-label', `${index + 1}번 칸 글자`);
+      input.onchange = () => { const value = input.value.trim(); current.labels[index] = value && (state.size !== 10 || /^\d+$/.test(value)) ? (state.size !== 10 && state.mode === 'alphabet' && ['Q','U'].includes(value.toUpperCase()) ? 'Q/U' : value) : current.labels[index]; input.value = current.labels[index]; save(); };
+      input.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); input.blur(); $('bingoEdit').focus(); } };
+      cell.append(input);
+    } else {
+      cell.type = 'button'; const text = document.createElement('span'); text.className = 'bingo-letter'; text.textContent = label; text.classList.toggle('long-label', label.length > 3); text.classList.toggle('paired-letter', label === 'Q/U'); cell.append(text);
+      if (state.size !== 10) cell.insertAdjacentHTML('beforeend', '<svg class="pencil-x" viewBox="0 0 100 100" aria-hidden="true"><path pathLength="1" d="M24 20 Q48 43 78 80 M22 23 L74 81"/><path pathLength="1" d="M79 21 Q51 51 22 79 M77 19 L25 82"/></svg>');
+      cell.onclick = () => { const wasClear = progress(current, state.size).clear; current.checked[index] = !current.checked[index]; if (!wasClear) dismissed = false; save(); update(index); };
+    }
+    grid.append(cell);
+  });
+  update();
+}
+document.querySelectorAll('[data-bingo-size]').forEach(el => el.onclick = () => { state.size = Number(el.dataset.bingoSize); editing = false; dismissed = false; render(); save(); });
+document.querySelectorAll('[data-bingo-mode]').forEach(el => el.onclick = () => { state.mode = el.dataset.bingoMode; editing = false; dismissed = false; render(); save(); });
+$('bingoEdit').onclick = () => { editing = !editing; render(); };
+$('bingoContinue').onclick = () => { dismissed = true; update(); $('bingoGrid').querySelector('button')?.focus(); };
+function resetBoard(shuffle) {
+  const current = board(); current.checked.fill(false);
+  if (shuffle) current.labels = shuffledLabels(current, state.size, state.mode);
+  dismissed = false; render(); save();
+}
+function requestReset(shuffle) {
+  if (!board().checked.some(Boolean)) { resetBoard(shuffle); return; }
+  pendingAction = shuffle;
+  $('bingoResetDescription').textContent = shuffle ? '현재 체크를 지우고 다시 섞어요. 3×3·4×4 기본 알파벳은 A~Z에서 새로 뽑고, 직접 수정한 글자는 유지돼요.' : '현재 빙고판의 체크만 지워요. 글자와 다른 빙고판은 그대로 유지돼요.';
+  $('bingoResetDialog').showModal();
+}
+$('bingoReset').onclick = () => requestReset(false);
+$('bingoShuffle').onclick = () => requestReset(true);
+$('bingoResetDialog').addEventListener('close', () => { if ($('bingoResetDialog').returnValue === 'confirm') resetBoard(pendingAction); });
+window.addEventListener('storage', e => {
+  if (e.key !== BINGO_KEY || !e.newValue) return;
+  if (editing) { $('bingoSave').hidden = false; $('bingoSave').textContent = '다른 창에서 변경됐어요 · 이 창의 수정은 다음 저장 시 적용돼요'; return; }
+  try { state = validateBingo(JSON.parse(e.newValue)); dismissed = false; render(); $('bingoSave').textContent = ''; $('bingoSave').hidden = true; }
+  catch { $('bingoSave').hidden = false; $('bingoSave').textContent = '다른 창의 빙고를 읽지 못했어요'; }
+});
+window.addEventListener('beforeunload', e => { if (saveFailed) { e.preventDefault(); e.returnValue = ''; } });
+render();
+if (saveFailed) { $('bingoSave').hidden = false; $('bingoSave').textContent = '저장 기록을 읽지 못했어요 · 새 입력 전 브라우저 저장 설정을 확인해주세요'; }
